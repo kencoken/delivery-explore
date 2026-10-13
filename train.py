@@ -538,7 +538,7 @@ def _(mo):
     - `Time_to_prep` contributing little would make sense if preparation and delivery durations were largely independent, although we haven't established that this is the explanation.
     - `Type_of_vehicle` is a little more counter-intuitive for real data, but looking at the possible options there actually isn't that much variation (motorcycle, scooter, electric scooter, plus bicycles which were removed during data cleaning).
 
-    > Reducing the feature set from 18 to 9 features had negligible impact on predictive performance (five-fold CV MAE: 3.167 → 3.142 minutes), indicating that most predictive information is concentrated in a relatively small subset of features.
+    > Reducing the feature set from 18 to 9 features had negligible impact on predictive performance (five-fold CV MAE: 3.169 → 3.142 minutes), indicating that most predictive information is concentrated in a relatively small subset of features.
     """)
     return
 
