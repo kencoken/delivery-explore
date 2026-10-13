@@ -53,6 +53,14 @@ def _(df):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    It looks like some missing values are stored as "NaN " and "conditions NaN", which is why the initial count was zero. Clean up the data to remove whitespace, and replace "NaN" values with a proper marker:
+    """)
+    return
+
+
 @app.cell
 def _(pd):
     def clean_df(df):
@@ -268,6 +276,14 @@ def _(formatted_df, plot_counts):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    A few of the fields have low frequency or strange values. Let's split the data by these values to investigate them further.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     #### Dig into bicycle vehicle type
     """)
     return
@@ -347,6 +363,14 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    `Delivery_person_ID` appears to be comprised of three subfields. Let's investigate them:
+    """)
+    return
+
+
 @app.function
 def split_delivery_person_id(df):
     return df["Delivery_person_ID"].str.extract(
@@ -380,9 +404,16 @@ def _(delivery_ids):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Are 'res' codes related to restaurants?
+    """)
+    return
+
+
 @app.cell
 def _(delivery_ids, formatted_df):
-    # are 'res' codes related to restaurants? no, lat / long vary
     formatted_df[delivery_ids["res"] == "13"]
     return
 
@@ -390,14 +421,15 @@ def _(delivery_ids, formatted_df):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    no, lat / long vary
+    No, lat / long vary.
+
+    How about 'p' and 'res' pairs, as 'p' seems to relate to city and perhaps 'res' is reused between cities?
     """)
     return
 
 
 @app.cell
 def _(delivery_ids, formatted_df):
-    # how about 'p' and 'res' pairs, as 'p' seems to relate to city and perhaps 'res' is reused between cities? no, lat / long vary
     formatted_df[(delivery_ids["p"] == "INDO") & (delivery_ids["res"] == "13")]
     return
 
@@ -405,7 +437,7 @@ def _(delivery_ids, formatted_df):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    yes, with this lat / long are singular, except interestingly enough sometimes the signt of lat / long are flipped
+    yes, with this lat / long are singular, except **interestingly enough sometimes the sign of lat / long are flipped**
     """)
     return
 
@@ -474,7 +506,7 @@ def _(pd, plt):
                 .size()
                 .reset_index(name="count")
             )
-    
+
             plot_lat = counts[label_lat]
             plot_long = counts[label_long]
             point_size = counts["count"]
@@ -825,7 +857,8 @@ def _(mo):
 
 
 @app.cell
-def _(formatted_df, model_df, model_feats_df):
+def _(data_validated, formatted_df, model_df, model_feats_df):
+    assert data_validated
     formatted_df.to_parquet("processed/train_formatted_df.parquet")
     model_df.to_parquet("processed/train_model_df.parquet")
     model_feats_df.to_parquet("processed/train_model_feats_df.parquet")
@@ -851,7 +884,8 @@ def _(clean_df, format_df, pd, prepare_model_df, prepare_model_feats_df):
 
 
 @app.cell
-def _(formatted_df_test, model_df_test, model_feats_df_test):
+def _(data_validated, formatted_df_test, model_df_test, model_feats_df_test):
+    assert data_validated
     formatted_df_test.to_parquet("processed/test_formatted_df.parquet")
     model_df_test.to_parquet("processed/test_model_df.parquet")
     model_feats_df_test.to_parquet("processed/test_model_feats_df.parquet")
@@ -885,7 +919,8 @@ def _(cleaned_df, df_test, model_feats_df, model_feats_df_test):
         assert dataset["Delivery_distance"].dropna().ge(0).all()
         assert dataset["Time_to_prep"].dropna().between(0, 1440).all()
         assert dataset["Day_of_week"].dropna().between(0, 6).all()
-    return
+    data_validated = True
+    return (data_validated,)
 
 
 if __name__ == "__main__":

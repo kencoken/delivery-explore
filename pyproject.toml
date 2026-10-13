@@ -1,7 +1,7 @@
 [project]
 name = "delivery-explore"
 version = "0.1.0"
-description = "Add your description here"
+description = "Food delivery duration modelling and analysis with CatBoost"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

@@ -52,7 +52,7 @@ def _(mo):
     mo.md(r"""
     For the starting feature set, we remove the following raw features from the input data:
 
-    * delivery coordinates (as this is superceeded by delivery distance, we assume direction is not important)
+    * delivery coordinates (as this is superseded by delivery distance, we assume direction is not important)
     * date (as we assume that day of week captures any relevant calendar-specific information in a more general way)
     """)
     return
@@ -448,9 +448,9 @@ def _(X, cross_validate_catboost, cv, y):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    This result is marginally better across all folds than the previous one, bringing the overall CV MAE from:
+    This result is marginally better on average than the previous one, bringing the overall CV MAE from:
 
-    3.169 ± 0.037 -> 3.155 ± 0.031
+    3.169 ± 0.037 -> 3.155 ± 0.027
 
     Therefore, take this as the **new best model** for further ablations
     """)
@@ -464,7 +464,7 @@ def _(mo):
 
     `Time_to_prep`, `Day_of_week`, `Type_of_vehicle` appear to contribute little to the model.
 
-    `Time_to_prep` makes sense, as the delivery time would probably be independent of prep time (and this suggests that delivery time indeed _does not include prep time_). This is also great, as it means in production we wouldn't need prep time to make a prediction and so can make a delivery time estimate at the point of order and deal with prep time separately if required.
+    `Time_to_prep` being unimportant would be consistent with delivery time being independent of prep time, although this is not definitive evidence for this. Nonetheless, irrespective of reason, being able to omit it would be useful in production where actual prep time would not be available immediately after an order has been placed.
 
     `Day_of_week` perhaps is already captured in `Road_traffic_density` (and this also might apply to `Time_Ordered` - we can try removing that next)
 
@@ -532,9 +532,11 @@ def _(mo):
     | Further reduced | 10 | 3.144 |
     | Without `Time_Orderd` | 9 | **3.142** |
 
-            We further observed a small MAE improvement (0.025 in total, or 1.5 seconds - compared to standard deviation across the folds of approximately 1.8 seconds, so not above the noise floor) by removing the unimportant features. The geographic features alongisde `Day_of_week` and `Time_Ordered` are likely captured in the most important feature of `Traffic_Density`, i.e. there is likely feature redundancy. `Time_to_prep` makes sense to drop. Only `Type_of_vehicle` is a little strange.
+    We observed a further small improvement after removing the unimportant features.
 
-    Given the small improvement that is within margin of error, it's probably fairest to say that the cross-validation improvement did not get worse but we could simplify the model by moving from 18 to 9 features.
+    - The geographic features, `Day_of_week` and `Time_Orderd` appear to provide little additional predictive information in these experiments. This could be due to feature redundancy (e.g. traffic density capturing signal that we'd expect restaurant location and day / time ordered to be proxies for), although this is just a hypothesis.
+    - `Time_to_prep` contributing little would make sense if preparation and delivery durations were largely independent, although we haven't established that this is the explanation.
+    - `Type_of_vehicle` is a little more counter-intuitive for real data, but looking at the possible options there actually isn't that much variation (motorcycle, scooter, electric scooter, plus bicycles which were removed during data cleaning).
 
     > Reducing the feature set from 18 to 9 features had negligible impact on predictive performance (five-fold CV MAE: 3.167 → 3.142 minutes), indicating that most predictive information is concentrated in a relatively small subset of features.
     """)
@@ -688,7 +690,7 @@ def _(X_best, error_by_slice, np, oof_no_time, pd, y):
         y,
         oof_no_time,
     )
-    return (distance_bins,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -700,7 +702,7 @@ def _(mo):
 
 
 @app.cell
-def _(distance_bins, error_by_slice, plt):
+def _(error_by_slice, mean_absolute_error, np, pd, plt):
     def plot_combined(X_best, oof_best, y):
         traffic_order = [
             "Low", "Medium", "High", "Jam", "__missing__"
@@ -709,6 +711,14 @@ def _(distance_bins, error_by_slice, plt):
         distance_order = [
             "0–5 km", "5–10 km", "10–15 km", ">15 km", "Missing"
         ]
+
+        distance_bins = pd.cut(
+            X_best["Delivery_distance"].astype(float),
+            bins=[0, 5, 10, 15, np.inf],
+            labels=["0–5 km", "5–10 km", "10–15 km", ">15 km"],
+            include_lowest=True,
+        ).astype("string").fillna("Missing")
+        overall_mae = mean_absolute_error(y, oof_best)
 
         traffic_stats = error_by_slice(
             X_best["Road_traffic_density"], y, oof_best
@@ -727,7 +737,7 @@ def _(distance_bins, error_by_slice, plt):
             bars = ax.bar(stats.index, stats["mae"])
 
             ax.axhline(
-                3.142,
+                overall_mae,
                 color="red",
                 linestyle="--",
                 label="Overall MAE",
@@ -792,7 +802,7 @@ def _(mo):
 
 
 @app.cell
-def _(np, pd, plt):
+def _(mean_absolute_error, np, pd, plt):
     def plot_distances_deep_dive(X_best, oof_best, y):
         residual = y.to_numpy() - oof_best
 
@@ -825,7 +835,7 @@ def _(np, pd, plt):
         plt.plot(midpoints, stats["bias"], marker="o", label="Bias")
 
         plt.axvline(10, color="red", linestyle="--", label="10 km threshold")
-        plt.axhline(3.142, color="gray", linestyle=":", label="Overall MAE")
+        plt.axhline(mean_absolute_error(y, oof_best), color="gray", linestyle=":", label="Overall MAE")
 
         plt.xlabel("Delivery distance (km)")
         plt.ylabel("Error (minutes)")
@@ -859,8 +869,8 @@ def _(mo):
 
 
 @app.cell
-def _(Pool, cv, np):
-    def calculate_shap_values(X, models):
+def _(Pool, np):
+    def calculate_shap_values(X, models, cv):
         cat_features = X.select_dtypes(
             include=["string", "object"]
         ).columns.tolist()
@@ -884,20 +894,15 @@ def _(Pool, cv, np):
 
 
 @app.cell
-def _(np, pd, shap):
+def _(np, shap):
     def prepare_shap_values(X, shap_values):
         X_plot = X.copy()
 
         for col in X_plot.select_dtypes(include="number").columns:
-            if pd.api.types.is_numeric_dtype(X_plot[col]):
-                X_plot[col] = X_plot[col].to_numpy(
-                    dtype="float64",
-                    na_value=np.nan,
-                )
-            else:
-                X_plot[col] = X_plot[col].astype(object).where(
-                    X_plot[col].notna(), None
-                )
+            X_plot[col] = X_plot[col].to_numpy(
+                dtype="float64",
+                na_value=np.nan,
+            )
 
         explanation = shap.Explanation(
             values=shap_values,
@@ -911,8 +916,8 @@ def _(np, pd, shap):
 
 
 @app.cell
-def _(X, calculate_shap_values, models, prepare_shap_values):
-    shap_values = calculate_shap_values(X, models)
+def _(X, calculate_shap_values, cv, models, prepare_shap_values):
+    shap_values = calculate_shap_values(X, models, cv)
     explanation = prepare_shap_values(X, shap_values)
     return explanation, shap_values
 
@@ -926,7 +931,7 @@ def _(explanation, shap):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    It looks like `Delivery_person_Age`, `Delivery_distance` and `Delivery_person_Ratings` all have an interesting bi-model distribution that is unusual for a SHAP plot. Let's dig into these further by slicing by bins for each and plotting the SHAP values per case:
+    It looks like `Delivery_person_Age`, `Delivery_distance` and `Delivery_person_Ratings` all have an interesting bimodal distribution. Let's investigate by plotting each observation's SHAP contribution against its feature value:
     """)
     return
 
@@ -1326,16 +1331,15 @@ def _(mo):
 
 @app.cell
 def _(
-    X,
     X_best,
     calculate_shap_values,
+    cv,
     models_best,
     prepare_shap_values,
     shap,
-    shap_values,
 ):
-    shap_values_best = calculate_shap_values(X_best, models_best)
-    explanation_best = prepare_shap_values(X, shap_values)
+    shap_values_best = calculate_shap_values(X_best, models_best, cv)
+    explanation_best = prepare_shap_values(X_best, shap_values_best)
     shap.plots.beeswarm(explanation_best)
     return
 
@@ -1429,17 +1433,6 @@ def _(X_test, final_model):
 
 
 @app.cell
-def _(X_best, X_test, df_test, np, predictions):
-    assert len(predictions) == len(df_test)
-    assert np.isfinite(predictions).all()
-    assert (predictions > 0).all()
-
-    assert list(X_test.columns) == list(X_best.columns)
-    assert X_test.dtypes.equals(X_best.dtypes)
-    return
-
-
-@app.cell
 def _(pd, predictions, y):
     # sanity check distributions
     pd.DataFrame({
@@ -1450,21 +1443,30 @@ def _(pd, predictions, y):
 
 
 @app.cell
-def _(df_test, pd, predictions):
+def _(X_best, X_test, df_test, np, pd, predictions):
+    raw_test_ids = pd.read_csv("dataset/test.csv")["ID"]
+    sample = pd.read_csv("dataset/Sample_Submission.csv")
+
+    # Preserve literal identifiers while checking positional prediction alignment.
+    assert raw_test_ids.str.strip().tolist() == df_test["ID"].tolist()
+    assert len(predictions) == len(raw_test_ids)
+    assert np.isfinite(predictions).all()
+    assert (predictions > 0).all()
+    assert X_test.columns.tolist() == X_best.columns.tolist()
+    assert X_test.dtypes.equals(X_best.dtypes)
+
     submission = pd.DataFrame({
-        "ID": df_test["ID"].to_numpy(),
+        "ID": raw_test_ids.to_numpy(),
         "Time_taken (min)": predictions,
     })
 
     assert len(submission) == len(df_test)
     assert submission["ID"].is_unique
 
+    assert submission.columns.tolist() == sample.columns.tolist()
+    assert submission["ID"].tolist() == sample["ID"].tolist()
+
     submission.to_csv("processed/submission.csv", index=False)
-    return
-
-
-@app.cell
-def _():
     return
 
 
