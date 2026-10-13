@@ -46,3 +46,11 @@ uv run marimo edit train.py
 ```
 
 Execute all cells. This runs the median baseline and CatBoost cross-validation experiments, produces the diagnostic plots, retrains the selected model on the full cleaned training set, and generates test predictions.
+
+## Tooling disclosure
+
+I directed the analysis and wrote the report myself. LLMs assisted with:
+
+* Drafting analytical/pandas code
+* Reviewing code and the report, and refining notebook commentary
+* Drafting this README
