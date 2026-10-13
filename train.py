@@ -37,6 +37,27 @@ def _(pd):
     return (df_train,)
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Model training
+
+    We train a CatBoost model and compare to a median baseline, using five-fold cross-validation with fixed splits for a maximally stable performance estimate.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    For the starting feature set, we remove the following raw features from the input data:
+
+    * delivery coordinates (as this is superceeded by delivery distance, we assume direction is not important)
+    * date (as we assume that day of week captures any relevant calendar-specific information in a more general way)
+    """)
+    return
+
+
 @app.cell
 def _():
     train_cols = [
@@ -56,7 +77,8 @@ def _():
         "Restaurant_ID",
         "Time_to_prep",
         "Delivery_distance",
-        "Day_of_week"
+        "Day_of_week",
+        "Type_of_order"
     ]
     return (train_cols,)
 
@@ -250,6 +272,7 @@ def _(mean_absolute_error, np, oof_predictions, scores, y):
 
 @app.cell
 def _(np, oof_predictions, plt, y):
+    # +ve -> underprediction, -ve -> overprediction
     residuals = y.to_numpy() - oof_predictions
 
     plt.figure(figsize=(8, 4))
@@ -275,6 +298,14 @@ def _(oof_predictions, plt, residuals):
     plt.ylabel("Residual (actual - predicted)")
     plt.title("Out-of-fold residuals vs. predictions")
     plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Check the banding pattern is a result of discrete target values in the data rather than a model failure by plotting for a single value of the target
+    """)
     return
 
 
@@ -319,6 +350,14 @@ def _(oof_predictions, pd, residuals):
     return (diagnostics,)
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Check whether residuals vary systematically with predicted duration
+    """)
+    return
+
+
 @app.cell
 def _(diagnostics, plt):
     diagnostics.groupby(
@@ -331,6 +370,14 @@ def _(diagnostics, plt):
     plt.ylabel("Residual (minutes)")
     plt.title("Residual bias by predicted delivery time")
     plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Interesting. It looks like longer delivery times tend to suffer from underprediction.
+    """)
     return
 
 
@@ -401,20 +448,9 @@ def _(X, cross_validate_catboost, cv, y):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    Compared to the previous results:
-    ```
-    Fold 1: MAE = 3.130, best iteration = 1141
-    Fold 2: MAE = 3.202, best iteration = 1207
-    Fold 3: MAE = 3.148, best iteration = 1008
-    Fold 4: MAE = 3.205, best iteration = 2129
-    Fold 5: MAE = 3.149, best iteration = 1313
-
-    CV MAE: 3.167 ± 0.031
-    ```
-
     This result is marginally better across all folds than the previous one, bringing the overall CV MAE from:
 
-    3.167 ± 0.031 -> 3.155 ± 0.031
+    3.169 ± 0.037 -> 3.155 ± 0.031
 
     Therefore, take this as the **new best model** for further ablations
     """)
@@ -432,7 +468,10 @@ def _(mo):
 
     `Day_of_week` perhaps is already captured in `Road_traffic_density` (and this also might apply to `Time_Ordered` - we can try removing that next)
 
-    `Type_of_vehicle` is a little stranger.
+    `Type_of_order` makes sense, as looking at its valid values (snack, meal, drinks, buffet - all 10k each) this appears to be a non-informative field.
+
+
+    `Type_of_vehicle` is a little stranger on the surface, but again looking at its values (motorcycle, scooter, electric scooter) there isn't much actual variation here.
 
     Let's try removing them and re-training to see if the performance drops.
     """)
@@ -445,6 +484,7 @@ def _(X_no_location, cross_validate_catboost, cv, y):
         "Day_of_week",
         "Time_to_prep",
         "Type_of_vehicle",
+        "Type_of_order"
     ]
 
     X_reduced = X_no_location.drop(
@@ -487,16 +527,16 @@ def _(mo):
 
     | Model | Features | CV MAE |
     |---|---:|---:|
-    | Full model | 17 | 3.167 |
-    | No geographic features | 13 | 3.155 |
+    | Full model | 18 | 3.169 |
+    | No geographic features | 14 | 3.155 |
     | Further reduced | 10 | 3.144 |
     | Without `Time_Orderd` | 9 | **3.142** |
 
-    We further observed a small MAE improvement (0.025 in total, or 1.5 seconds - compared to standard deviation across the folds of approximately 1.8 seconds, so not above the noise floor) by removing the unimportant features. The geographic features alongisde `Day_of_week` and `Time_Ordered` are likely captured in the most important feature of `Traffic_Density`, i.e. there is likely feature redundancy. `Time_to_prep` makes sense to drop. Only `Type_of_vehicle` is a little strange.
+            We further observed a small MAE improvement (0.025 in total, or 1.5 seconds - compared to standard deviation across the folds of approximately 1.8 seconds, so not above the noise floor) by removing the unimportant features. The geographic features alongisde `Day_of_week` and `Time_Ordered` are likely captured in the most important feature of `Traffic_Density`, i.e. there is likely feature redundancy. `Time_to_prep` makes sense to drop. Only `Type_of_vehicle` is a little strange.
 
-    Given the small improvement that is within margin of error, it's probably fairest to say that the cross-validation improvement did not get worse but we could simplify the model by moving from 17 to 9 features.
+    Given the small improvement that is within margin of error, it's probably fairest to say that the cross-validation improvement did not get worse but we could simplify the model by moving from 18 to 9 features.
 
-    > Reducing the feature set from 17 to 9 features had negligible impact on predictive performance (five-fold CV MAE: 3.167 → 3.142 minutes), indicating that most predictive information is concentrated in a relatively small subset of features.
+    > Reducing the feature set from 18 to 9 features had negligible impact on predictive performance (five-fold CV MAE: 3.167 → 3.142 minutes), indicating that most predictive information is concentrated in a relatively small subset of features.
     """)
     return
 
@@ -505,6 +545,14 @@ def _(mo):
 def _(mo):
     mo.md(r"""
     #### How much does traffic density contribute to MAE?
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    If traffic captures information that geographic features might otherwise supply, does removing traffic make geography useful?
     """)
     return
 
@@ -557,17 +605,17 @@ def _(mo):
 
     1) Road traffic provides useful information, but it's contribution is surprisingly modest:
 
-    * 5.8 seconds when geographic features are retained
-    * 4.3 seconds when geographic features are removed
+    * 5.6 seconds when geographic features are retained
+    * 4.5 seconds when geographic features are removed
 
     (around 2-3% deterioration in predictive performance)
 
     2) Geographic features actually perform worse when road traffic is absent
 
-    * With geographic features: 3.263
-    * Without geographic features: 3.227
+    * With geographic features: 3.262
+    * Without geographic features: 3.230
 
-    Removing geographic features improves MAE by 0.036 minutes, or approximately 2.2 seconds.
+    Removing geographic features improves MAE by 0.032 minutes, or approximately 1.9 seconds.
 
     It suggests that the additional geographic features aren't providing a useful substitute for observed traffic density.
     """)
@@ -578,6 +626,14 @@ def _(mo):
 def _(mo):
     mo.md(r"""
     ### Sliced Error Analysis of best model
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The overall MAE could hide variation in performance across different sub-populations. Let's investigate the actual behaviour of the model by slicing over traffic and distance (the two most important features).
     """)
     return
 
@@ -794,6 +850,14 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Now that we have reviewed the model's overall behaviour, let's use SHAP analysis to understand the model's learnt relationships better. Unlike the feature importance, this looks at the specific contribution in minutes that different features make to the final prediction.
+    """)
+    return
+
+
 @app.cell
 def _(Pool, cv, np):
     def calculate_shap_values(X, models):
@@ -821,7 +885,7 @@ def _(Pool, cv, np):
 
 @app.cell
 def _(np, pd, shap):
-    def plot_shap_values(X, shap_values):
+    def prepare_shap_values(X, shap_values):
         X_plot = X.copy()
 
         for col in X_plot.select_dtypes(include="number").columns:
@@ -841,23 +905,41 @@ def _(np, pd, shap):
             feature_names=X.columns.tolist(),
         )
 
-        shap.plots.beeswarm(explanation)
+        return explanation
 
-        for feature in [
-            "Delivery_distance",
-            "Delivery_person_Age",
-            "Delivery_person_Ratings",
-        ]:
-            shap.plots.scatter(explanation[:, feature])
-
-    return (plot_shap_values,)
+    return (prepare_shap_values,)
 
 
 @app.cell
-def _(X, calculate_shap_values, models, plot_shap_values):
+def _(X, calculate_shap_values, models, prepare_shap_values):
     shap_values = calculate_shap_values(X, models)
-    plot_shap_values(X, shap_values)
-    return (shap_values,)
+    explanation = prepare_shap_values(X, shap_values)
+    return explanation, shap_values
+
+
+@app.cell
+def _(explanation, shap):
+    shap.plots.beeswarm(explanation)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    It looks like `Delivery_person_Age`, `Delivery_distance` and `Delivery_person_Ratings` all have an interesting bi-model distribution that is unusual for a SHAP plot. Let's dig into these further by slicing by bins for each and plotting the SHAP values per case:
+    """)
+    return
+
+
+@app.cell
+def _(explanation, shap):
+    for _feature in [
+        "Delivery_distance",
+        "Delivery_person_Age",
+        "Delivery_person_Ratings"
+    ]:
+        shap.plots.scatter(explanation[:, _feature])
+    return
 
 
 @app.cell(hide_code=True)
@@ -889,6 +971,14 @@ def _(df_train_feats, plt):
 
     plt.tight_layout()
     plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The discontinuities also exist in the observed targets, so they are not solely artefacts of the fitted model
+    """)
     return
 
 
@@ -1235,9 +1325,18 @@ def _(mo):
 
 
 @app.cell
-def _(X_best, calculate_shap_values, models_best, plot_shap_values):
+def _(
+    X,
+    X_best,
+    calculate_shap_values,
+    models_best,
+    prepare_shap_values,
+    shap,
+    shap_values,
+):
     shap_values_best = calculate_shap_values(X_best, models_best)
-    plot_shap_values(X_best, shap_values_best)
+    explanation_best = prepare_shap_values(X, shap_values)
+    shap.plots.beeswarm(explanation_best)
     return
 
 
