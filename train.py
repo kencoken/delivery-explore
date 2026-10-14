@@ -539,6 +539,8 @@ def _(mo):
     - `Type_of_vehicle` is a little more counter-intuitive for real data, but looking at the possible options there actually isn't that much variation (motorcycle, scooter, electric scooter, plus bicycles which were removed during data cleaning).
 
     > Reducing the feature set from 18 to 9 features had negligible impact on predictive performance (five-fold CV MAE: 3.169 → 3.142 minutes), indicating that most predictive information is concentrated in a relatively small subset of features.
+
+    *The redundancy hypothesis for the time features is checked after submission in Appendix B at the end of this notebook.*
     """)
     return
 
@@ -1473,7 +1475,7 @@ def _(X_best, X_test, df_test, np, pd, predictions):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Appendix: (post-submission) recovering delivery distance for (0, 0) restaurants
+    ## Appendix A: (post-submission) recovering delivery distance for (0, 0) restaurants
     """)
     return
 
@@ -1752,6 +1754,230 @@ def _(mo):
     * B and C are within fold-to-fold noise of each other (~0.03), so the equator-origin approximation in B costs nothing a tree model cares about. The gain comes from not discarding the 8%, not from the form of the feature.
     * The equivalent fix on real data, where the origin would matter, is to impute the restaurant location from master data rather than from other orders.
     * The final model and submission above are left unchanged; this section records a check carried out after submission.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Appendix B: (post-submission) why dropping the time features cost nothing
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The ablations above removed `Time_Orderd` and `Day_of_week` with no loss in CV MAE, and we hypothesised that `Road_traffic_density` was already capturing whatever they contribute. This appendix checks that hypothesis directly.
+
+    Two kinds of relationship are possible, and worth keeping distinct: an **exact mapping**, where one field can be written down from another, and a **shift in distribution**, where one field changes the mix of another without determining it.
+    """)
+    return
+
+
+@app.cell
+def _(df_train, pd):
+    _ok = df_train["Time_Orderd"].notna() & df_train["Road_traffic_density"].notna()
+
+    tf_minute = (
+        df_train.loc[_ok, "Time_Orderd"].dt.total_seconds() // 60
+    ).astype(int)
+    tf_traffic = df_train.loc[_ok, "Road_traffic_density"].astype(str)
+
+    pd.crosstab(
+        (tf_minute // 60).rename("Order hour"),
+        tf_traffic.rename("Road_traffic_density"),
+    )[["Low", "High", "Medium", "Jam"]]
+    return tf_minute, tf_traffic
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Traffic falls into bands of the day with almost no overlap, and the few mixed hours are the ones containing a boundary. Is the mapping exact at the resolution the data provides, and does it hold outside the training set?
+    """)
+    return
+
+
+@app.cell
+def _(df_test, pd, tf_minute, tf_traffic):
+    # One traffic class per distinct order minute?
+    _classes_per_minute = tf_traffic.groupby(tf_minute).nunique()
+    assert (_classes_per_minute == 1).all()
+
+    tf_mapping = tf_traffic.groupby(tf_minute).first()
+
+    # Does the minute -> traffic mapping learnt from train reproduce the test set?
+    _ok_test = (
+        df_test["Time_Orderd"].notna() & df_test["Road_traffic_density"].notna()
+    )
+    _test_minute = (
+        df_test.loc[_ok_test, "Time_Orderd"].dt.total_seconds() // 60
+    ).astype(int)
+    _test_traffic = df_test.loc[_ok_test, "Road_traffic_density"].astype(str)
+    _test_match = tf_mapping.reindex(_test_minute).to_numpy() == _test_traffic.to_numpy()
+    assert _test_match.all()
+
+    print(
+        f"Distinct order minutes: {len(tf_mapping)}; "
+        f"traffic classes per minute: {_classes_per_minute.max()}"
+    )
+    print(f"Test rows reproduced by the train mapping: {_test_match.mean():.1%}")
+
+    # Contiguous bands of the mapping
+    _bands = []
+    for _m, _c in tf_mapping.items():
+        if _bands and _bands[-1][2] == _c:
+            _bands[-1][1] = _m
+        else:
+            _bands.append([_m, _m, _c])
+
+    pd.DataFrame(
+        [
+            {
+                "From": f"{_s // 60:02d}:{_s % 60:02d}",
+                "To": f"{_e // 60:02d}:{_e % 60:02d}",
+                "Road_traffic_density": _c,
+                "Orders": int(tf_minute.between(_s, _e).sum()),
+            }
+            for _s, _e, _c in _bands
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Traffic is an **exact mapping** from order time: five bands of the clock, one class per minute, no exceptions in training, and the same mapping reproduces every test row. `Time_Orderd` therefore carries nothing *about traffic* that the traffic class doesn't already say.
+
+    Order time could still matter through something else. Within a traffic band, does delivery time vary with the hour, and if so, what carries it?
+    """)
+    return
+
+
+@app.cell
+def _(df_train, pd, tf_minute, tf_traffic, y):
+    tf_hour = (tf_minute // 60).rename("Order hour")
+    _rows = tf_hour.index
+    _band_order = ["Low", "High", "Medium", "Jam"]
+
+    tf_within_band = (
+        pd.DataFrame(
+            {
+                "y": y.loc[_rows],
+                "distance": df_train.loc[_rows, "Delivery_distance"],
+            }
+        )
+        .groupby([tf_traffic.rename("Road_traffic_density"), tf_hour])
+        .agg(
+            Orders=("y", "size"),
+            **{
+                "Mean delivery time (min)": ("y", "mean"),
+                "Mean delivery distance (km)": ("distance", "mean"),
+            },
+        )
+        .round(1)
+    )
+
+    # Hide the slivers of orders either side of a band boundary
+    tf_within_band = tf_within_band[tf_within_band["Orders"] >= 300]
+
+    tf_within_band.reindex(_band_order, level=0)
+    return (tf_hour,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Within every band, delivery time still varies with the hour by 3–5 minutes (Low: 19.6 at 08–10 against 22.4 at 22–23; Medium: 22.9 at 15–16 against 27.4 at 17–18), so the clock carries something beyond the traffic class. The same table shows what: delivery distance shifts with the hour, from around 2 km in the morning to 6 km around midday and 12 km in the evening. This is a **shift in distribution**, not a mapping: any given hour contains a spread of distances. Since the model keeps the actual distance, the hour's guess about it is superseded.
+
+    To check that nothing is left, group orders by the five step effects identified above (traffic band, the 10 km distance threshold, number of deliveries, courier age at 30 and rating at 4.5), subtract each group's mean, and look at what the hour still explains in the residual. The other four features are left out to keep the groups populated; any imbalance in them across hours shows up here as hour effect, so this is an upper bound on what remains after the full model.
+    """)
+    return
+
+
+@app.cell
+def _(df_train, np, pd, tf_hour, tf_traffic, y):
+    _rows = tf_hour.index
+
+    def _threshold(series, value):
+        _s = series.astype(float)
+        return np.where(
+            _s.isna(), "missing", np.where(_s >= value, f">= {value}", f"< {value}")
+        )
+
+    # Group by the five step effects identified in the SHAP analysis above
+    tf_structure = pd.DataFrame(
+        {
+            "traffic": tf_traffic,
+            "distance": _threshold(df_train.loc[_rows, "Delivery_distance"], 10),
+            "multiple": df_train.loc[_rows, "multiple_deliveries"].astype(str),
+            "age": _threshold(df_train.loc[_rows, "Delivery_person_Age"], 30),
+            "rating": _threshold(df_train.loc[_rows, "Delivery_person_Ratings"], 4.5),
+        },
+        index=_rows,
+    )
+
+    tf_residual = y.loc[_rows] - y.loc[_rows].groupby(
+        [tf_structure[_c] for _c in tf_structure]
+    ).transform("mean")
+
+    _raw = y.loc[_rows].groupby(tf_hour).mean()
+    _res = tf_residual.groupby(tf_hour).mean()
+
+    print(f"Spread of mean delivery time across hours, raw:       {_raw.max() - _raw.min():.1f} min")
+    print(f"Spread of mean residual across hours, after control:  {_res.max() - _res.min():.1f} min")
+    print(f"Residual noise remaining (std):                        {tf_residual.std():.1f} min")
+
+    pd.DataFrame(
+        {"Raw mean (min)": _raw, "Residual after control (min)": _res}
+    ).round(2)
+    return tf_residual, tf_structure
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    After controlling for the retained structure the hour explains nothing: the spread across hours drops from about 12 minutes to about half a minute, which is noise at these sample sizes. Time of day matters only through traffic (an exact mapping) and distance (a shift in distribution), and the model keeps both.
+
+    `Day_of_week` is the same question. Its raw means differ by up to 2.5 minutes between days, which looks like signal, but the traffic and distance mix also differs between days:
+    """)
+    return
+
+
+@app.cell
+def _(df_train, pd, tf_hour, tf_residual, tf_structure, y):
+    _rows = tf_hour.index
+    _dow = df_train.loc[_rows, "Day_of_week"].rename("Day_of_week")
+    _names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    tf_by_day = pd.DataFrame(
+        {
+            "Orders": _dow.value_counts(),
+            "Raw mean delivery time (min)": y.loc[_rows].groupby(_dow).mean(),
+            "Share in Jam traffic": (tf_structure["traffic"] == "Jam").groupby(_dow).mean(),
+            "Share over 10 km": (tf_structure["distance"] == ">= 10").groupby(_dow).mean(),
+            "Residual after control (min)": tf_residual.groupby(_dow).mean(),
+        }
+    ).round(2)
+
+    tf_by_day.index = [_names[int(_d)] for _d in tf_by_day.index]
+    tf_by_day
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The day-of-week differences are composition: Wednesday has twice Thursday's share of long deliveries and a third more Jam-hour orders, and once the retained structure is controlled for, the day explains nothing (residuals within ±0.1 min).
+
+    Time and day of order are simply different ways of slicing the same population into groups with different mixes of traffic and distance. Once an order's actual traffic and distance are known, the slice it came from is irrelevant, which is why removing both features left the CV MAE unchanged. This does not make delivery time predictable from traffic and distance alone: around 6 minutes of spread remains after controlling for them and the courier thresholds.
+
+    In a real operation these would be three distinct signals: the order time is known when the order is placed, the traffic is a later and noisier observation, and the distance is independent of the clock. The redundancy here is a property of this dataset, not a reason to drop time features in general.
+
+    The final model and submission above are left unchanged; this section records a check carried out after submission.
     """)
     return
 
