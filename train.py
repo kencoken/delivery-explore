@@ -1473,7 +1473,7 @@ def _(X_best, X_test, df_test, np, pd, predictions):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Post-submission check: recovering delivery distance for (0, 0) restaurant rows
+    ## Appendix: (post-submission) recovering delivery distance for (0, 0) restaurants
     """)
     return
 
@@ -1481,22 +1481,19 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    During exploration we found that ~8% of rows have restaurant coordinates of (0, 0), with delivery coordinates set to small fixed values such as (0.03, 0.03). We treated these as missing location data and masked all four coordinate fields, which leaves `Delivery_distance` missing for these rows. The sliced error analysis above shows this slice has markedly higher MAE than any other.
+    ### Was masking the delivery distance too conservative?
 
-    Looking at the raw coordinates again, however, *every* row in the dataset, not only the (0, 0) rows, has delivery coordinates equal to the sign-corrected restaurant coordinates plus an identical offset in latitude and longitude of `k × 0.01°`, with `k ∈ {1–9, 11, 13, 14}`. For the (0, 0) rows the offset is therefore intact; only the origin is unknown. Haversine distance needs an origin, but the offset does not, and since the generating process evidently applied its rule to the offset, the distance signal is fully recoverable for these rows.
+    During exploration we found that ~8% of rows have restaurant coordinates of (0, 0), with delivery coordinates set to small fixed values such as (0.03, 0.03) or (0.11, 0.11). We treated these as missing location data and masked all four coordinate fields, which leaves `Delivery_distance` missing for these rows. The sliced error analysis above shows this slice has markedly higher MAE than any other.
 
-    We test two ways of recovering it, keeping everything else identical to the final nine-feature model (same features, hyperparameters and CV folds):
+    Two other observations from exploration suggest this may have been too conservative. The paired delivery values in the (0, 0) rows look like a fixed offset from the (missing) restaurant location, and the distribution of `Delivery_distance` for the remaining rows showed equally sized peaks at regularly spaced values. If the same regular offset structure applies to the rows with valid restaurant coordinates, then the offset carries the distance information for *all* rows, and the (0, 0) rows should not have been discarded just because the origin is missing: the offset is intact, only the origin is unknown.
 
-    * **Variant B**: compute the haversine distance on the raw coordinates *without* masking, i.e. with (0, 0) as the origin for the affected rows. Latitude only enters through `cos(φ)` on the longitude term, so for `k = 3` this gives 4.72 km against 4.41–4.69 km at the true latitudes in the dataset (10°–31°), while the `k = 4` cluster starts at 5.9 km, so a tree model can still separate the clusters.
-    * **Variant C**: replace `Delivery_distance` by the offset `k` itself for all rows, which needs no origin at all.
-
-    The origin cannot be imputed from other orders: the affected rows belong to 50 restaurant IDs that are (0, 0) in every one of their rows.
+    We check this in three steps: (1) whether every row has the same offset structure, (2) whether the regularly spaced distance peaks are exactly these offsets, and (3) whether the target depends on the offset in the same way for the (0, 0) rows as for the rest.
     """)
     return
 
 
 @app.cell
-def _(X_best, np, pd):
+def _(X_best, pd):
     # Raw, pre-masking coordinates aligned to the modelling rows by index
     zr_raw = pd.read_parquet("processed/train_formatted_df.parquet").loc[
         X_best.index,
@@ -1509,22 +1506,51 @@ def _(X_best, np, pd):
     ]
 
     # Sign-corrected restaurant coordinates, as in explore.py
-    _rest_lat = zr_raw["Restaurant_latitude"].abs()
-    _rest_lon = zr_raw["Restaurant_longitude"].abs()
-    _dlat = zr_raw["Delivery_location_latitude"] - _rest_lat
-    _dlon = zr_raw["Delivery_location_longitude"] - _rest_lon
+    zr_raw["Restaurant_latitude"] = zr_raw["Restaurant_latitude"].abs()
+    zr_raw["Restaurant_longitude"] = zr_raw["Restaurant_longitude"].abs()
 
-    zr_is_zero = (_rest_lat == 0) & (_rest_lon == 0)
+    zr_is_zero = (
+        (zr_raw["Restaurant_latitude"] == 0)
+        & (zr_raw["Restaurant_longitude"] == 0)
+    )
 
     # The rows with missing distance are exactly the (0, 0) rows
     assert (zr_is_zero == X_best["Delivery_distance"].isna()).all()
 
-    # Offset structure holds for every row: equal lat / lon offsets that are
-    # integer multiples of 0.01 degrees (tolerances cover 6 d.p. rounding in the CSV)
-    assert (_dlat - _dlon).abs().lt(1e-3).all()
-    zr_offset_k = (_dlat * 100).round()
-    assert (_dlat * 100 - zr_offset_k).abs().lt(1e-2).all()
+    _dlat = zr_raw["Delivery_location_latitude"] - zr_raw["Restaurant_latitude"]
+    _dlon = zr_raw["Delivery_location_longitude"] - zr_raw["Restaurant_longitude"]
 
+    # Tolerances cover the 6 d.p. rounding of coordinates in the CSV
+    _equal_offsets = (_dlat - _dlon).abs().lt(1e-3)
+    zr_offset_k = (_dlat * 100).round()
+    _on_grid = (_dlat * 100 - zr_offset_k).abs().lt(1e-2)
+
+    print(f"Rows with equal lat / lon offsets:       {_equal_offsets.mean():.1%}")
+    print(f"Rows with offsets on a 0.01 degree grid: {_on_grid.mean():.1%}")
+
+    assert _equal_offsets.all() and _on_grid.all()
+
+    zr_offset_k = zr_offset_k.astype(int)
+
+    pd.crosstab(
+        zr_offset_k.rename("Offset k (× 0.01°)"),
+        zr_is_zero.map(
+            {True: "(0, 0) restaurant rows", False: "Rows with coordinates"}
+        ).rename("Population"),
+    )
+    return zr_is_zero, zr_offset_k, zr_raw
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The offset structure holds for every row, not only the (0, 0) rows. Both populations are drawn from the same set of twelve offsets, `k ∈ {1–9, 11, 13, 14}`, in roughly equal proportions (`k = 14` is a small group that happens not to occur in the (0, 0) rows).
+    """)
+    return
+
+
+@app.cell
+def _(X_best, np, zr_is_zero, zr_offset_k, zr_raw):
     def _haversine_km(lat1, lon1, lat2, lon2):
         lat1, lon1, lat2, lon2 = (np.radians(_c) for _c in (lat1, lon1, lat2, lon2))
         _a = (
@@ -1534,9 +1560,11 @@ def _(X_best, np, pd):
         _a = np.clip(_a, 0, 1)
         return 6371.0088 * 2 * np.arctan2(np.sqrt(_a), np.sqrt(1 - _a))
 
+    # Haversine on the raw coordinates for every row, i.e. measured from (0, 0)
+    # for the masked rows
     zr_distance_unmasked = _haversine_km(
-        _rest_lat,
-        _rest_lon,
+        zr_raw["Restaurant_latitude"],
+        zr_raw["Restaurant_longitude"],
         zr_raw["Delivery_location_latitude"],
         zr_raw["Delivery_location_longitude"],
     )
@@ -1547,15 +1575,109 @@ def _(X_best, np, pd):
         X_best.loc[~zr_is_zero, "Delivery_distance"],
     )
 
-    print(f"(0, 0) restaurant rows: {zr_is_zero.sum():,} ({zr_is_zero.mean():.1%})")
-    print("Offset k values:", sorted(zr_offset_k.unique().astype(int).tolist()))
-    print("Offset k counts among (0, 0) rows:")
-    print(zr_offset_k[zr_is_zero].value_counts().sort_index().to_string())
-    return zr_distance_unmasked, zr_is_zero, zr_offset_k
+    # Distance clusters for the rows with coordinates, one per offset value
+    zr_clusters = (
+        X_best.loc[~zr_is_zero, "Delivery_distance"]
+        .groupby(zr_offset_k[~zr_is_zero])
+        .agg(["count", "min", "median", "max"])
+    )
+
+    # The same offset measured from (0, 0), as used for the masked rows below
+    zr_clusters["from (0, 0)"] = _haversine_km(
+        0, 0, zr_clusters.index * 0.01, zr_clusters.index * 0.01
+    )
+
+    # Clusters must not overlap, and for each k present in the masked rows the
+    # (0, 0)-origin value must fall below the next cluster's minimum
+    _next_min = zr_clusters["min"].shift(-1)
+    assert (zr_clusters["max"] < _next_min.fillna(np.inf)).all()
+
+    _k_masked = np.sort(zr_offset_k[zr_is_zero].unique())
+    assert (
+        zr_clusters.loc[_k_masked, "from (0, 0)"] < _next_min.loc[_k_masked]
+    ).all()
+
+    zr_clusters.round(2)
+    return (zr_distance_unmasked,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The twelve regularly spaced peaks in the `Delivery_distance` distribution are exactly the twelve offset values. Within each `k` the spread (e.g. 4.40–4.68 km for `k = 3`) comes only from the restaurant latitude, which enters through `cos(φ)` on the longitude term across the dataset's 10°–31° range, and the clusters never overlap. Measured from (0, 0) instead of the true origin, the same offset lands just above its cluster's maximum and below the next cluster's minimum, so an origin-free distance for the masked rows would still be separable from its neighbours by a tree model.
+    """)
+    return
 
 
 @app.cell
-def _(X_best, cross_validate_catboost, cv, y, zr_distance_unmasked, zr_offset_k):
+def _(np, plt, y, zr_is_zero, zr_offset_k):
+    _fig, _ax = plt.subplots(figsize=(8, 4))
+
+    for _mask, _label in [
+        (~zr_is_zero, "Rows with coordinates"),
+        (zr_is_zero, "(0, 0) restaurant rows"),
+    ]:
+        _stats = y[_mask].groupby(zr_offset_k[_mask]).agg(["mean", "std", "count"])
+
+        _ax.errorbar(
+            _stats.index,
+            _stats["mean"],
+            yerr=1.96 * _stats["std"] / np.sqrt(_stats["count"]),
+            fmt="o-",
+            capsize=2,
+            label=_label,
+        )
+
+    _ax.set_xlabel("Offset k (× 0.01°)")
+    _ax.set_ylabel("Mean delivery time (min)")
+    _ax.set_title("Observed delivery time by offset, with and without restaurant coordinates")
+    _ax.legend()
+    plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The target depends on the offset in the same way in both populations, including the step of around +6 minutes at `k ≥ 7` (the 10 km discontinuity identified above). The (0, 0) rows therefore carry the full distance signal; what they lack is only the origin needed to express it in kilometres.
+
+    Before recovering it from the offset, check whether the origin itself can be looked up from other orders at the same restaurant:
+    """)
+    return
+
+
+@app.cell
+def _(df_train, zr_is_zero):
+    _zero_share = zr_is_zero.groupby(df_train["Restaurant_ID"]).mean()
+    _affected = _zero_share[_zero_share > 0]
+
+    print(f"Restaurants with any (0, 0) rows: {len(_affected)}")
+    print(f"...of which (0, 0) in every row:  {(_affected == 1).sum()}")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Recovering the distance
+
+    The affected rows belong to 50 restaurants that are (0, 0) in every one of their orders, so the origin cannot be imputed from the data. The offset, however, needs no origin. We therefore test two ways of recovering the distance signal, keeping everything else identical to the final nine-feature model (same features, hyperparameters and CV folds):
+
+    * **Variant B**: use the haversine distance computed on the raw coordinates *without* masking, i.e. measured from (0, 0) for the affected rows. As shown above, this places each masked row just above its true cluster and below the next one.
+    * **Variant C**: replace `Delivery_distance` by the offset `k` itself for all rows, which needs no origin at all.
+    """)
+    return
+
+
+@app.cell
+def _(
+    X_best,
+    cross_validate_catboost,
+    cv,
+    y,
+    zr_distance_unmasked,
+    zr_offset_k,
+):
     X_zr_haversine = X_best.assign(Delivery_distance=zr_distance_unmasked)
     X_zr_offset = X_best.assign(Delivery_distance=zr_offset_k.astype(float))
 
